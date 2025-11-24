@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  nexus:
+    image: postgres:15-alpine
+    container_name: nexus
+    environment:
+      POSTGRES_USER: mercury
+      POSTGRES_PASSWORD: mercury_password
+      POSTGRES_DB: mercury_db
+    volumes:
+      - nexus_data:/var/lib/postgresql/data
+      - ./services/nexus/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - mercury-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U mercury -d mercury_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - mercury-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  herald-api:
+    build:
+      context: ./services/herald-api
+      dockerfile: Dockerfile
+    container_name: herald-api
+    volumes:
+      - ./services/herald-api:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://mercury:mercury_password@nexus:5432/mercury_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      nexus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mercury-network
+
+  herald-renderer:
+    build:
+      context: ./services/herald-renderer
+      dockerfile: Dockerfile
+    container_name: herald-renderer
+    volumes:
+      - ./services/herald-renderer:/app
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mercury-network
+
+  harvester:
+    build:
+      context: ./services/harvester
+      dockerfile: Dockerfile
+    container_name: harvester
+    volumes:
+      - ./services/harvester:/app
+      - ./data/input:/data/input
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mercury-network
+
+  oracle:
+    build:
+      context: ./services/oracle
+      dockerfile: Dockerfile
+    container_name: oracle
+    ports:
+      - "8001:8001"
+    networks:
+      - mercury-network
+
+  hawkeye:
+    build:
+      context: ./services/hawkeye
+      dockerfile: Dockerfile
+    container_name: hawkeye
+    volumes:
+      - ./services/hawkeye:/app
+      - ./data/input:/data/input
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://mercury:mercury_password@nexus:5432/mercury_db
+    depends_on:
+      redis:
+        condition: service_healthy
+      nexus:
+        condition: service_healthy
+    networks:
+      - mercury-network
+
+  herald-dashboard:
+    build:
+      context: ./services/herald-dashboard
+      dockerfile: Dockerfile
+    container_name: herald-dashboard
+    volumes:
+      - ./services/herald-dashboard:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/graphql
+    depends_on:
+      - herald-api
+    networks:
+      - mercury-network
+
+networks:
+  mercury-network:
+    driver: bridge
+
+volumes:
+  nexus_data:
